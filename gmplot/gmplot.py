@@ -9,6 +9,17 @@ import warnings
 from collections import namedtuple
 
 from gmplot.color_dicts import mpl_color_map, html_color_codes
+from __future__ import absolute_import
+
+import json
+import math
+import os
+import requests
+import warnings
+
+from collections import namedtuple
+
+from gmplot.color_dicts import mpl_color_map, html_color_codes
 from gmplot.google_maps_templates import SYMBOLS, CIRCLE_MARKER
 
 
@@ -75,7 +86,7 @@ class GoogleMapPlotter(object):
         color = self.html_color_codes.get(color, color)
         self.points.append((lat, lng, color[1:], title))
 
-    def scatter(self, lats, lngs, color=None, size=None, marker=True, c=None, s=None, symbol='o', **kwargs):
+    def scatter(self, lats, lngs, color=None, size=None, marker=True, c=None, s=None, title="no implementation", symbol='o', **kwargs):
         color = color or c
         size = size or s or 40
         kwargs["color"] = color
@@ -83,7 +94,7 @@ class GoogleMapPlotter(object):
         settings = self._process_kwargs(kwargs)
         for lat, lng in zip(lats, lngs):
             if marker:
-                self.marker(lat, lng, settings['color'])
+                self.marker(lat, lng, settings['color'], title=title)
             else:
                 self._add_symbol(Symbol(symbol, lat, lng, size), **settings)
 
@@ -233,7 +244,7 @@ class GoogleMapPlotter(object):
         self.shapes.append((shape, settings))
 
     def draw(self, htmlfile):
-        """Create the html file which include one google map and all points and paths. If 
+        """Create the html file which include one google map and all points and paths. If
         no string is provided, return the raw html.
         """
         f = open(htmlfile, 'w')
