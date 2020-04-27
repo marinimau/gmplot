@@ -1,25 +1,9 @@
-from __future__ import absolute_import
-
-import json
 import math
-import os
 import requests
-import warnings
+import json
+import os
 
-from collections import namedtuple
-
-from gmplot.color_dicts import mpl_color_map, html_color_codes
-from gmplot.google_maps_templates import SYMBOLS, CIRCLE_MARKER
-
-
-Symbol = namedtuple('Symbol', ['symbol', 'lat', 'long', 'size'])
-
-
-class InvalidSymbolError(Exception):
-    pass
-
-class GoogleAPIError(Exception):
-    pass
+from .color_dicts import mpl_color_map, html_color_codes
 
 def safe_iter(var):
     try:
@@ -30,19 +14,15 @@ def safe_iter(var):
 
 class GoogleMapPlotter(object):
 
-    def __init__(self, center_lat, center_lng, zoom, map_type='', apikey=''):
+    def __init__(self, center_lat, center_lng, zoom, apikey=''):
         self.center = (float(center_lat), float(center_lng))
         self.zoom = int(zoom)
-        self.map_type = str(map_type)
         self.apikey = str(apikey)
         self.grids = None
         self.paths = []
         self.shapes = []
         self.points = []
-        self.circles = []
-        self.symbols = []
         self.heatmap_points = []
-        self.ground_overlays = []
         self.radpoints = []
         self.gridsetting = None
         self.coloricon = os.path.join(os.path.dirname(__file__), 'markers/%s.png')
@@ -50,18 +30,15 @@ class GoogleMapPlotter(object):
         self.html_color_codes = html_color_codes
 
     @classmethod
-    def from_geocode(cls, location_string, zoom=13, apikey=''):
-        lat, lng = cls.geocode(location_string, apikey)
-        return cls(lat, lng, zoom, apikey)
+    def from_geocode(cls, location_string, zoom=13):
+        lat, lng = cls.geocode(location_string)
+        return cls(lat, lng, zoom)
 
     @classmethod
-    def geocode(self, location_string, apikey=''):
+    def geocode(cls, location_string):
         geocode = requests.get(
-            'https://maps.googleapis.com/maps/api/geocode/json?address="%s"&key=%s' % (location_string, apikey))
+            'http://maps.googleapis.com/maps/api/geocode/json?address="%s"' % location_string)
         geocode = json.loads(geocode.text)
-        if geocode.get('error_message', ''):
-            raise GoogleAPIError(geocode['error_message'])
-
         latlng_dict = geocode['results'][0]['geometry']['location']
         return latlng_dict['lat'], latlng_dict['lng']
 
@@ -75,7 +52,7 @@ class GoogleMapPlotter(object):
         color = self.html_color_codes.get(color, color)
         self.points.append((lat, lng, color[1:], title))
 
-    def scatter(self, lats, lngs, color=None, size=None, marker=True, c=None, s=None, symbol='o', **kwargs):
+    def scatter(self, lats, lngs, color=None, size=None, marker=True, c=None, s=None, title="no implementation", **kwargs):
         color = color or c
         size = size or s or 40
         kwargs["color"] = color
@@ -83,17 +60,9 @@ class GoogleMapPlotter(object):
         settings = self._process_kwargs(kwargs)
         for lat, lng in zip(lats, lngs):
             if marker:
-                self.marker(lat, lng, settings['color'])
+                self.marker(lat, lng, settings['color'], title=title)
             else:
-                self._add_symbol(Symbol(symbol, lat, lng, size), **settings)
-
-    def _add_symbol(self, symbol, color=None, c=None, **kwargs):
-        color = color or c
-        kwargs.setdefault('face_alpha', 0.5)
-        kwargs.setdefault('face_color', "#000000")
-        kwargs.setdefault("color", color)
-        settings = self._process_kwargs(kwargs)
-        self.symbols.append((symbol, settings))
+                self.circle(lat, lng, size, **settings)
 
     def circle(self, lat, lng, radius, color=None, c=None, **kwargs):
         color = color or c
@@ -101,7 +70,8 @@ class GoogleMapPlotter(object):
         kwargs.setdefault('face_color', "#000000")
         kwargs.setdefault("color", color)
         settings = self._process_kwargs(kwargs)
-        self.circles.append(((lat, lng, radius), settings))
+        path = self.get_cycle(lat, lng, radius)
+        self.shapes.append((path, settings))
 
     def _process_kwargs(self, kwargs):
         settings = dict()
@@ -139,6 +109,7 @@ class GoogleMapPlotter(object):
                 settings[key] = color
 
         settings["closed"] = kwargs.get("closed", None)
+
         return settings
 
     def plot(self, lats, lngs, color=None, c=None, **kwargs):
@@ -148,24 +119,19 @@ class GoogleMapPlotter(object):
         path = zip(lats, lngs)
         self.paths.append((path, settings))
 
-    def heatmap(self, lats, lngs, threshold=10, radius=10, gradient=None, opacity=0.6, maxIntensity=1, dissipating=True):
+    def heatmap(self, lats, lngs, threshold=10, radius=10, gradient=None, opacity=0.6, dissipating=True):
         """
         :param lats: list of latitudes
         :param lngs: list of longitudes
-        :param maxIntensity:(int) max frequency to use when plotting. Default (None) uses max value on map domain.
         :param threshold:
         :param radius: The hardest param. Example (string):
         :return:
         """
         settings = {}
-        # Try to give anyone using threshold a heads up.
-        if threshold != 10:
-            warnings.warn("The 'threshold' kwarg is deprecated, replaced in favor of maxIntensity.")
         settings['threshold'] = threshold
         settings['radius'] = radius
         settings['gradient'] = gradient
         settings['opacity'] = opacity
-        settings['maxIntensity'] = maxIntensity
         settings['dissipating'] = dissipating
         settings = self._process_heatmap_kwargs(settings)
 
@@ -178,7 +144,6 @@ class GoogleMapPlotter(object):
         settings_string = ''
         settings_string += "heatmap.set('threshold', %d);\n" % settings_dict['threshold']
         settings_string += "heatmap.set('radius', %d);\n" % settings_dict['radius']
-        settings_string += "heatmap.set('maxIntensity', %d);\n" % settings_dict['maxIntensity']
         settings_string += "heatmap.set('opacity', %f);\n" % settings_dict['opacity']
 
         dissipation_string = 'true' if settings_dict['dissipating'] else 'false'
@@ -196,35 +161,6 @@ class GoogleMapPlotter(object):
 
         return settings_string
 
-    def ground_overlay(self, url, bounds_dict, opacity=1.0):
-        '''
-        :param url: Url of image to overlay
-        :param bounds_dict: dict of the form  {'north': , 'south': , 'west': , 'east': }
-        setting the image container
-        :param opacity: The opacity of the overlay, expressed as a number between 0 and 1. Optional. Defaults to 1.
-        :return: None
-        Example use:
-        import gmplot
-        gmap = gmplot.GoogleMapPlotter(37.766956, -122.438481, 13)
-        bounds_dict = {'north':37.832285, 'south': 37.637336, 'west': -122.520364, 'east': -122.346922}
-        gmap.ground_overlay('http://explore.museumca.org/creeks/images/TopoSFCreeks.jpg', bounds_dict)
-        gmap.draw("my_map.html")
-        Google Maps API documentation
-        https://developers.google.com/maps/documentation/javascript/groundoverlays#introduction
-        '''
-
-        bounds_string = self._process_ground_overlay_image_bounds(bounds_dict)
-        self.ground_overlays.append((url, bounds_string, opacity))
-
-    def _process_ground_overlay_image_bounds(self, bounds_dict):
-        bounds_string = 'var imageBounds = {'
-        bounds_string += "north:  %.4f,\n" % bounds_dict['north']
-        bounds_string += "south:  %.4f,\n" % bounds_dict['south']
-        bounds_string += "east:  %.4f,\n" % bounds_dict['east']
-        bounds_string += "west:  %.4f};\n" % bounds_dict['west']
-
-        return bounds_string
-
     def polygon(self, lats, lngs, color=None, c=None, **kwargs):
         color = color or c
         kwargs.setdefault("color", color)
@@ -232,10 +168,9 @@ class GoogleMapPlotter(object):
         shape = zip(lats, lngs)
         self.shapes.append((shape, settings))
 
+    # create the html file which include one google map and all points and
+    # paths
     def draw(self, htmlfile):
-        """Create the html file which include one google map and all points and paths. If 
-        no string is provided, return the raw html.
-        """
         f = open(htmlfile, 'w')
         f.write('<html>\n')
         f.write('<head>\n')
@@ -243,22 +178,19 @@ class GoogleMapPlotter(object):
             '<meta name="viewport" content="initial-scale=1.0, user-scalable=no" />\n')
         f.write(
             '<meta http-equiv="content-type" content="text/html; charset=UTF-8"/>\n')
-        f.write('<title>Google Maps - gmplot </title>\n')
+        f.write('<title>Google Maps - pygmaps </title>\n')
         if self.apikey:
-            f.write('<script type="text/javascript" src="https://maps.googleapis.com/maps/api/js?libraries=visualization&key=%s"></script>\n' % self.apikey )
+            f.write('<script type="text/javascript" src="https://maps.googleapis.com/maps/api/js?libraries=visualization&sensor=true_or_false&key=%s"></script>\n' % self.apikey )
         else:
-            f.write('<script type="text/javascript" src="https://maps.googleapis.com/maps/api/js?libraries=visualization"></script>\n' )
+            f.write('<script type="text/javascript" src="https://maps.googleapis.com/maps/api/js?libraries=visualization&sensor=true_or_false"></script>\n' )
         f.write('<script type="text/javascript">\n')
         f.write('\tfunction initialize() {\n')
         self.write_map(f)
         self.write_grids(f)
         self.write_points(f)
         self.write_paths(f)
-        self.write_circles(f)
-        self.write_symbols(f)
         self.write_shapes(f)
         self.write_heatmap(f)
-        self.write_ground_overlay(f)
         f.write('\t}\n')
         f.write('</script>\n')
         f.write('</head>\n')
@@ -305,13 +237,24 @@ class GoogleMapPlotter(object):
         for point in self.points:
             self.write_point(f, point[0], point[1], point[2], point[3])
 
-    def write_circles(self, f):
-        for circle, settings in self.circles:
-            self.write_circle(f, circle[0], circle[1], circle[2], settings)
+    def get_cycle(self, lat, lng, rad):
+        # unit of radius: meter
+        cycle = []
+        d = (rad / 1000.0) / 6378.8
+        lat1 = (math.pi / 180.0) * lat
+        lng1 = (math.pi / 180.0) * lng
 
-    def write_symbols(self, f):
-        for symbol, settings in self.symbols:
-            self.write_symbol(f, symbol, settings)
+        r = [x * 10 for x in range(36)]
+        for a in r:
+            tc = (math.pi / 180.0) * a
+            y = math.asin(
+                math.sin(lat1) * math.cos(d) + math.cos(lat1) * math.sin(d) * math.cos(tc))
+            dlng = math.atan2(math.sin(
+                tc) * math.sin(d) * math.cos(lat1), math.cos(d) - math.sin(lat1) * math.sin(y))
+            x = ((lng1 - dlng + math.pi) % (2.0 * math.pi)) - math.pi
+            cycle.append(
+                (float(y * (180.0 / math.pi)), float(x * (180.0 / math.pi))))
+        return cycle
 
     def write_paths(self, f):
         for path, settings in self.paths:
@@ -321,14 +264,14 @@ class GoogleMapPlotter(object):
         for shape, settings in self.shapes:
             self.write_polygon(f, shape, settings)
 
+    # TODO: Add support for mapTypeId: google.maps.MapTypeId.SATELLITE
     def write_map(self,  f):
         f.write('\t\tvar centerlatlng = new google.maps.LatLng(%f, %f);\n' %
                 (self.center[0], self.center[1]))
         f.write('\t\tvar myOptions = {\n')
-        if self.map_type:
-            f.write('\t\t\tmapTypeId: \'%s\',\n' % self.map_type.lower())
         f.write('\t\t\tzoom: %d,\n' % (self.zoom))
-        f.write('\t\t\tcenter: centerlatlng\n')
+        f.write('\t\t\tcenter: centerlatlng,\n')
+        f.write('\t\t\tmapTypeId: google.maps.MapTypeId.ROADMAP\n')
         f.write('\t\t};\n')
         f.write(
             '\t\tvar map = new google.maps.Map(document.getElementById("map_canvas"), myOptions);\n')
@@ -346,31 +289,6 @@ class GoogleMapPlotter(object):
         f.write('\t\t});\n')
         f.write('\t\tmarker.setMap(map);\n')
         f.write('\n')
-
-    def write_symbol(self, f, symbol, settings):
-        strokeColor = settings.get('color') or settings.get('edge_color')
-        strokeOpacity = settings.get('edge_alpha')
-        strokeWeight = settings.get('edge_width')
-        fillColor = settings.get('face_color')
-        fillOpacity = settings.get('face_alpha')
-        try:
-            template = SYMBOLS[symbol.symbol]
-        except KeyError:
-            raise InvalidSymbolError("Symbol %s is not implemented" % symbol.symbol)
-
-        f.write(template.format(lat=symbol.lat, long=symbol.long, size=symbol.size, strokeColor=strokeColor,
-                                strokeOpacity=strokeOpacity, strokeWeight=strokeWeight,
-                                fillColor=fillColor, fillOpacity=fillOpacity))
-
-    def write_circle(self, f, lat, long, size, settings):
-        strokeColor = settings.get('color') or settings.get('edge_color')
-        strokeOpacity = settings.get('edge_alpha')
-        strokeWeight = settings.get('edge_width')
-        fillColor = settings.get('face_color')
-        fillOpacity = settings.get('face_alpha')
-        f.write(CIRCLE_MARKER.format(lat=lat, long=long, size=size, strokeColor=strokeColor,
-                                     strokeOpacity=strokeOpacity, strokeWeight=strokeWeight,
-                                     fillColor=fillColor, fillOpacity=fillOpacity))
 
     def write_polyline(self, f, path, settings):
         clickable = False
@@ -444,28 +362,16 @@ class GoogleMapPlotter(object):
             f.write('heatmap.setMap(map);' + '\n')
             f.write(settings_string)
 
-    def write_ground_overlay(self, f):
-
-        for url, bounds_string, opacity in self.ground_overlays:
-            f.write(bounds_string)
-            f.write('var groundOverlay;' + '\n')
-            f.write('groundOverlay = new google.maps.GroundOverlay(' + '\n')
-            f.write('\n')
-            f.write("'" + url + "'," + '\n')
-            f.write('imageBounds, {opacity: %f});' %opacity + '\n')
-            f.write('groundOverlay.setMap(map);' + '\n')
-
 if __name__ == "__main__":
-    apikey=''
 
-    mymap = GoogleMapPlotter(37.428, -122.145, 16, apikey)
-    # mymap = GoogleMapPlotter.from_geocode("Stanford University", apikey)
+    mymap = GoogleMapPlotter(37.428, -122.145, 16)
+    # mymap = GoogleMapPlotter.from_geocode("Stanford University")
 
     mymap.grid(37.42, 37.43, 0.001, -122.15, -122.14, 0.001)
     mymap.marker(37.427, -122.145, "yellow")
     mymap.marker(37.428, -122.146, "cornflowerblue")
     mymap.marker(37.429, -122.144, "k")
-    lat, lng = mymap.geocode("Stanford University", apikey)
+    lat, lng = mymap.geocode("Stanford University")
     mymap.marker(lat, lng, "red")
     mymap.circle(37.429, -122.145, 100, "#FF0000", ew=2)
     path = [(37.429, 37.428, 37.427, 37.427, 37.427),
@@ -480,7 +386,7 @@ if __name__ == "__main__":
     mymap.heatmap(path4[0], path4[1], threshold=10, radius=40)
     mymap.heatmap(path3[0], path3[1], threshold=10, radius=40, dissipating=False, gradient=[(30,30,30,0), (30,30,30,1), (50, 50, 50, 1)])
     mymap.scatter(path4[0], path4[1], c='r', marker=True)
-    mymap.scatter(path4[0], path4[1], s=90, marker=False, alpha=0.9, symbol='x', c='red', edge_width=4)
+    mymap.scatter(path4[0], path4[1], s=90, marker=False, alpha=0.1)
     # Get more points with:
     # http://www.findlatitudeandlongitude.com/click-lat-lng-list/
     scatter_path = ([37.424435, 37.424417, 37.424417, 37.424554, 37.424775, 37.425099, 37.425235, 37.425082, 37.424656, 37.423957, 37.422952, 37.421759, 37.420447, 37.419135, 37.417822, 37.417209],
